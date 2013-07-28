@@ -1,0 +1,152 @@
+require(pracma)
+require(deSolve)
+
+heat.1d.fem<-function(a,u.t.start,u.x.start,u.x.final,deg,grid.t,grid.x,f=NULL,
+  tol=c(.Machine$double.eps^(1/3),1e-06,1e-06))
+{
+  msg.text<-c(
+    "Preparing to execution ",
+    "Constructing basis ",
+    "Computing L ",
+    "Inverting L ",
+    "Computing R ",
+    "Assembling right side ",
+    "Solving ODE system ",
+    "Elapsed time: ",
+    "Trivial case\n")
+  msg<-function(param=2L,i=1L)
+  {
+    switch(param,
+      cat(msg.text[msg.id<<-1L],sep=""),
+      cat(rep('.',30L-nchar(msg.text[msg.id]))," done\n",msg.text[msg.id<<-msg.id+i],sep=""))
+    flush.console()
+  }
+  msg(1L)
+  u.t.start<-Vectorize(match.fun(u.t.start))
+  u.x.start<-Vectorize(match.fun(u.x.start))
+  u.x.final<-Vectorize(match.fun(u.x.final))
+  if(!is.null(f))
+    f<-match.fun(f)
+  stopifnot(
+    is.numeric(a),length(a)==3L,a[1L]>0,all(a[2L:3L]>=0),
+    length(formals(args(u.t.start)))==1L,
+    length(formals(args(u.x.start)))==1L,
+    length(formals(args(u.x.final)))==1L,
+    is.numeric(deg),deg>=1L,
+    is.numeric(grid.t),length(grid.t)>=1L,
+    is.numeric(grid.x),length(grid.x)>deg,(length(grid.x)-1L)%%deg==0L,
+    is.null(f)||length(formals(args(f)))==2L,
+    abs(u.x.start(grid.t[1L])-u.t.start(grid.x[1L]))<=.Machine$double.eps,
+    abs(u.x.final(grid.t[1L])-u.t.start(grid.x[length(grid.x)]))<=.Machine$double.eps,
+    is.numeric(tol),length(tol)==3L,all(tol>=0))
+  deg<-as.integer(deg)
+  tol<-as.list(tol)
+  names(tol)<-c("drv","int","ode")
+  n<-length(grid.x)
+  sol<-numeric()
+  if(n==2L)
+    msg(,8L)
+  else
+  {
+    msg()
+    duration<-proc.time()["elapsed"]
+    oliver<-as.function(alist(x=,abs(x>=0)))
+    mod<-as.function(alist(i=,1L+(i-1L)%%deg))
+    N.dots.fun<-function(i)
+    {
+      m<-mod(i)
+      ind<-sapply(c(1L,-1L),as.function(alist(s=,i+s*(1L-m):(1L-m+deg))))
+      if(i==1L||m!=1L)
+        return(as.matrix(grid.x[ind[,1L]]))
+      else
+        if(i==n)
+          return(as.matrix(grid.x[ind[,2L]]))
+        else
+          return(cbind(grid.x[ind[,2L]],grid.x[ind[,1L]]))
+    }
+    N.dots<-lapply(1L:n,N.dots.fun)
+    N.ints<-lapply(N.dots,as.function(alist(m=,apply(m,2L,range))))
+    N<-function(i)
+    {
+      m<-mod(i)
+      return(Vectorize(as.function(alist(x=,sum(sapply(1L:ncol(N.dots[[i]]),as.function(alist(k=,
+        oliver(x-N.ints[[i]][1L,k])*(1-oliver(x-N.ints[[i]][2L,k]))*
+        prod(x-N.dots[[i]][-m,k])/prod(N.dots[[i]][m,k]-N.dots[[i]][-m,k])))))))))
+    }
+    msg()
+    intvl<-as.function(alist(s=,c(x.1<-max(c(N.ints[[s[1L]]][1L],N.ints[[s[2L]]][1L])),
+      ifelse(x.1>(x.2<-min(c(N.ints[[s[1L]]][length(N.ints[[s[1L]]])],
+      N.ints[[s[2L]]][length(N.ints[[s[2L]]])]))),x.1,x.2))))
+    hsp.clear<-function(x.lims,g,h,...)
+    {
+      pars<-list(...)
+      if(length(pars)==0L)
+        simpadpt(as.function(alist(x=,g(x)*h(x))),x.lims[1L],x.lims[2L],tol$int)
+      else
+        if(length(pars)==1L)
+          simpadpt(as.function(alist(x=,g(x,pars[[1L]])*h(x))),
+            x.lims[1L],x.lims[2L],tol$int)
+        else
+          simpadpt(as.function(alist(x=,g(x,pars[[1L]])*h(x,pars[[2L]]))),x.lims[1L],x.lims[2L],
+            tol$int)
+    }
+    hsp<-function(g,h,s,...)
+    {
+      s<-setdiff(s,0L)
+      if(length(s)==1L)
+        x.lims<-N.ints[[s]]
+      else
+        x.lims<-as.matrix(intvl(s))
+      x.lims<-x.lims+c(1,-1)*.Machine$double.eps*abs(all(x.lims[1L,]!=x.lims[2L,]))
+      return(sum(apply(x.lims,2L,hsp.clear,g,h,...)))
+    }
+    drv.N.unv<-function(f,x,i)
+    {
+      if(any(N.ints[[i]][1L,]<=x&x<=N.ints[[i]][1L,]+tol$drv))
+        return(fderiv(f,x,method="forward",h=tol$drv))
+      else
+        if(any(N.ints[[i]][2L,]-tol$drv<=x&x<=N.ints[[i]][2L,]))
+          return(fderiv(f,x,method="backward",h=tol$drv))
+        else
+          return(fderiv(f,x,h=tol$drv))
+    }
+    drv.N<-Vectorize(drv.N.unv,c("x","i"))
+    dia.tri<-function(d.outer,...)
+    {
+      m<-sapply(1L:n,as.function(alist(i=,c(d.outer(1L:i,i,...),numeric(n-i)))))
+      return(m-diag(diag(m))+t(m))
+    }
+    L.outer<-Vectorize(as.function(alist(i=,j=,hsp(N(i),N(j),c(i,j)))))
+    L<-dia.tri(L.outer)
+    msg()
+    L.inv<-solve(L)
+    msg()
+    R.1<-Vectorize(as.function(alist(x=,i=,drop(a[1L:2L]%*%c(-drv.N(N(i),x,i),N(i)(x))))))
+    R.2<-Vectorize(as.function(alist(x=,i=,drv.N(N(i),x,i))))
+    R.outer<-Vectorize(as.function(alist(i=,j=,R.1=,hsp(R.1,R.2,c(i,j),i,j))),c("i","j"))
+    if(abs(a[2L])<=.Machine$double.eps)
+      R<--a[1L]*dia.tri(R.outer,R.2)
+    else
+      R<-outer(1L:n,1L:n,R.outer,R.1)
+    msg()
+    A<-L.inv%*%R+diag(rep(a[3L],n))
+    G<-as.function(alist(t=,drop(A[2L:(n-1L),c(1L,n)]%*%c(u.x.start(t),u.x.final(t)))))
+    if(is.null(f))
+      H<-as.function(alist(t=,numeric(n-2L)))
+    else
+      H<-as.function(alist(t=,drop(L.inv[2L:(n-1L),2L:(n-1L)]%*%sapply(2L:(n-1L),
+        as.function(alist(i=,hsp(f,N(i),c(i,0L),t)))))))
+    B<-Vectorize(as.function(alist(t=,G(t)+H(t))))
+    W.0<-u.t.start(grid.x[2L:(n-1L)])
+    fun.right<-as.function(alist(t=,y=,parms=,list(drop(A[2L:(n-1L),2L:(n-1L)]%*%y+B(t)))))
+    msg()
+    sol<-lsoda(W.0,grid.t,fun.right,NULL,tol$ode,tol$ode)[,-1L]
+    attributes(sol)<-list(dim=c(length(grid.t),n-2L))
+    msg()
+    duration<-as.integer(round(proc.time()["elapsed"]-duration))
+    duration.f<-list(sec=duration%%60L,min=(duration%/%60L)%%60L,hr=duration%/%3600L)
+    cat(sprintf("%d:%02d:%02d\n",duration.f$hr,duration.f$min,duration.f$sec))
+  }
+  sol<-cbind(u.x.start(grid.t),sol,u.x.final(grid.t))
+  return(sol)
+}
